@@ -1,0 +1,111 @@
+#!/bin/bash
+
+# Sample Usage:
+#     deepinsight input_dir=/tmp/hg_bert_block_and_operator_hierarchy/ output_dir=/tmp name=hg_bert_block_and_operator_hierarchy_output
+
+if (( $# < 3 )) 
+then
+        echo 'USAGE: '$0' input_dir="/tmp/MLPERF_BERT_step_100_input_info/" output_dir="/tmp" name="first_full_run"'
+        exit 1
+fi
+
+for ARGUMENT in "$@"
+do
+    KEY=$(echo $ARGUMENT | cut -f1 -d=)
+    VALUE=$(echo $ARGUMENT | cut -f2 -d=)
+
+    case "$KEY" in
+            input_dir)              INPUT_INFO_PATH=${VALUE} ;;
+            output_dir)             OUTPUT_DIR=${VALUE} ;;
+            name)                   RUN_NAME=${VALUE} ;;
+            idx)                    FILTER_IDS=${VALUE} ;;
+            profile)                ENABLE_PROFILE=${VALUE} ;;
+            ort_only)               ORT_ONLY=${VALUE} ;;
+            pt_only)                PT_ONLY=${VALUE} ;;
+            excludes_idx_prefix)    EXCLUDES_IDS=${VALUE} ;;
+            *)
+    esac
+done
+
+if [ -z "$INPUT_INFO_PATH" ]
+then
+    echo "`input` cannot be empty"
+    exit 1
+fi
+
+if [ -z "$OUTPUT_DIR" ]
+then
+    echo "`output_dir` cannot be empty"
+    exit 1
+fi
+
+if [ -z "$RUN_NAME" ]
+then
+    echo "`name` cannot be empty"
+    exit 1
+fi
+
+if [ -z "$FILTER_IDS" ]
+then
+    FILTER_IDS_PREFIX_PARAM=" "
+else
+    FILTER_IDS_PREFIX_PARAM=" --idx ${FILTER_IDS} "
+fi
+
+
+if [ -z "$EXCLUDES_IDS" ]
+then
+    EXCLUDES_IDS_PREFIX_PARAM=" "
+else
+    EXCLUDES_IDS_PREFIX_PARAM=" --exclude_idx_prefix ${EXCLUDES_IDS} "
+fi
+
+if [ -n "$ORT_ONLY" ] && [ -n "$PT_ONLY" ]
+then
+    echo "`ort_only` and `pt_only` cannot be set at the same time"
+    exit 1
+fi
+
+if [ -z "$ORT_ONLY" ]
+then
+    RUN_ORT_ONLY_PARAM=""
+else
+    RUN_ORT_ONLY_PARAM=" --run_ort_only "
+fi
+
+if [ -z "$PT_ONLY" ]
+then
+    RUN_PT_ONLY_PARAM=""
+else
+    RUN_PT_ONLY_PARAM=" --run_pt_only "
+fi
+
+
+TARGET_FOLDER=$OUTPUT_DIR/$RUN_NAME
+rm -rf $TARGET_FOLDER
+mkdir -p $TARGET_FOLDER
+
+if [ -z "$ENABLE_PROFILE" ]
+then
+    PROFILE_CMD=""
+else
+    PROFILE_CMD="nsys profile -o ${TARGET_FOLDER}/${RUN_NAME}_%p -t cuda,nvtx "
+fi
+
+CMD="${PROFILE_CMD} deepinsight_py -i $INPUT_INFO_PATH -o $TARGET_FOLDER/ -b $FILTER_IDS_PARAM $FILTER_IDS_PREFIX_PARAM $EXCLUDES_IDS_PREFIX_PARAM $RUN_ORT_ONLY_PARAM $RUN_PT_ONLY_PARAM"
+echo "CMD: $CMD"
+
+# grep -v ^I\ | grep -v ^pciBusID | grep -v ^major: | grep -v ^name: |grep -v ^Total\ memory:|grep -v ^Free\ memory:
+eval $CMD 2>&1 \
+    | grep --line-buffered -v "Warning: Unsupported operator ATenOp. No schema registered for this operator." \
+    | grep --line-buffered -v "Function body initialization failed for node 'Softmax_" \
+    | grep --line-buffered -v "Execution will fail if ORT does not have a specialized kernel for this op" \
+    | grep --line-buffered -v "Serializing optimized model with Graph Optimization level greater than ORT_ENABLE_EXTENDED and the NchwcTransformer enabled." \
+    | grep --line-buffered -v "Warning: Unsupported operator SoftmaxCrossEntropyLossInternal. No schema registered for this operator." \
+    | grep --line-buffered -v "duplicated allocator: OrtMemoryInfo" \
+    | grep --line-buffered -v "UserWarning: The model's forward method has \*\*kwargs parameter which has EXPERIMENTAL support" \
+    | grep --line-buffered -v "The model's forward method has \*\*kwargs parameter which has EXPERIMENTAL support!" \
+    | grep --line-buffered -v "Fast path enabled - skipping checks." \
+    | grep --line-buffered -v "UserWarning: Fast path enabled - skipping checks. Rebuild graph: True, Execution agent: True, Device check: True" \
+    | grep --line-buffered -v "PerformanceWarning: dropping on a non-lexsorted multi-index without a level parameter may impact performance." \
+    | grep --line-buffered -v "WARNING: The shape inference of com.microsoft::PythonOp type is missing, so it may result in wrong shape inference for the exported graph"
